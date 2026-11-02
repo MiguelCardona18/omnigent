@@ -1290,15 +1290,14 @@ describe("NewChatLandingScreen project prefill", () => {
           isLoading: false,
         }) as ReturnType<typeof useProjectConfig>,
     );
-    // Codex's catalog default model runs unpinned (no model_override), so
-    // remembering it means sending no model again.
+    // Clicking the catalog default's own row pins it, so Alpha's start rides it explicitly.
     const expectAlphaStart = (body: Record<string, unknown>) => {
       expect(body).toMatchObject({
         agent_id: CODEX_AGENT_ID,
+        model_override: "gpt-5.5",
         reasoning_effort: "high",
         workspace: RECENT_WORKSPACE,
       });
-      expect("model_override" in body).toBe(false);
     };
 
     renderLanding();

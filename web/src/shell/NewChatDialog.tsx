@@ -3892,6 +3892,10 @@ export function NewChatLandingScreen() {
     setCostControlMode(null);
     rememberPickerOptions(selectedNativeHarness, { model: modelUid, effort: "", routing: "off" });
   };
+  // Default follows the catalog's default; named rows (the default's too) pin an id.
+  const pickerDefaultRowShown =
+    (sandboxDefaultModelsEnabled && !sandboxSelectedUnsupported) ||
+    (!sandboxInferenceConfigured && pickerModelOptions.length > 0);
   const modelSection: ComposerConfigSection | undefined =
     sandboxHasModelCatalog ||
     supportsModelPicker ||
@@ -3925,10 +3929,7 @@ export function NewChatLandingScreen() {
           ),
           choices: [
             // Default can't launch once the provider rules the harness out.
-            ...((sandboxDefaultModelsEnabled && !sandboxSelectedUnsupported) ||
-            (!sandboxInferenceConfigured &&
-              pickerModelOptions.length > 0 &&
-              !pickerModelOptions.some((option) => option.isDefault))
+            ...(pickerDefaultRowShown
               ? [
                   {
                     key: "__default__",
@@ -3944,16 +3945,15 @@ export function NewChatLandingScreen() {
               label: visibleModelLabel(nativeModelLabel(option)),
               checked:
                 !routingOn &&
-                (option.fusion !== undefined
-                  ? isFusionModelUid(pickedModel) ||
-                    (pickedModel === "" && option.isDefault === true)
-                  : pickedModel === option.id || (pickedModel === "" && option.isDefault === true)),
+                ((option.fusion !== undefined
+                  ? isFusionModelUid(pickedModel)
+                  : pickedModel === option.id) ||
+                  (pickedModel === "" && option.isDefault === true && !pickerDefaultRowShown)),
               // The Fusion row always opens its Lead/Sidekick selectors,
-              // even when Fusion is the catalog default (routing it
-              // through MODEL_SELECT_DEFAULT would hide them).
+              // even when Fusion is the catalog default.
               onSelect: option.fusion
                 ? () => selectFusionModel(option.fusion!.default)
-                : () => selectPickerModel(option.isDefault ? MODEL_SELECT_DEFAULT : option.id),
+                : () => selectPickerModel(option.id),
               testId: `new-chat-landing-agent-model-${option.id}`,
               title: nativeModelTooltip(option),
               className: "whitespace-normal break-words [&>span:last-child]:min-w-0",
@@ -6139,6 +6139,18 @@ export function NewChatLandingScreen() {
           smartRoutingEligible: effectiveAgentId !== PENDING_AGENT_ID && smartRoutingEligible,
           costControlMode,
         });
+        // A remembered model the catalog doesn't list right now seeds as the
+        // catalog default; without a pick this visit, keep it and its effort.
+        const rememberedModel = readHarnessOptions(selectedNativeHarness).model;
+        if (
+          launchedOptions?.model === "" &&
+          !userPickedModelRef.current &&
+          rememberedModel &&
+          !pickerModelOptions.some((option) => option.id === rememberedModel)
+        ) {
+          delete launchedOptions.model;
+          delete launchedOptions.effort;
+        }
         if (launchedOptions !== null) {
           writeHarnessOption(selectedNativeHarness, launchedOptions);
         }

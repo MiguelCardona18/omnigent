@@ -1547,13 +1547,14 @@ describe("model picker hotkey", () => {
     closeMenu();
     const input = screen.getByTestId("new-chat-landing-input");
     act(() => input.focus());
+    // Default leads the cycle, then the catalog-default row pins Model A.
     fireEvent.keyDown(input, { code: "KeyM", ctrlKey: true, altKey: true });
-    expect(screen.getByRole("menuitemcheckbox", { name: "Model B" })).toHaveAttribute(
+    expect(screen.getByRole("menuitemcheckbox", { name: "Model A" })).toHaveAttribute(
       "aria-checked",
       "true",
     );
     fireEvent.keyDown(input, { code: "KeyM", ctrlKey: true, altKey: true });
-    expect(screen.getByRole("menuitemcheckbox", { name: "Model C" })).toHaveAttribute(
+    expect(screen.getByRole("menuitemcheckbox", { name: "Model B" })).toHaveAttribute(
       "aria-checked",
       "true",
     );
@@ -1570,6 +1571,9 @@ describe("model picker hotkey", () => {
     fireEvent.change(input, { target: { value: "unfinished task" } });
     act(() => input.focus());
 
+    // Default -> pinned GPT-5.5 -> GPT-5.6.
+    fireEvent.keyDown(input, { code: "KeyM", ctrlKey: true, altKey: true });
+    expect(screen.getByTestId("new-chat-landing-agent-model-value")).toHaveTextContent("GPT-5.5");
     fireEvent.keyDown(input, { code: "KeyM", ctrlKey: true, altKey: true });
     expect(screen.getByTestId("new-chat-landing-agent-model-value")).toHaveTextContent("GPT-5.6");
     expect(
@@ -4748,7 +4752,7 @@ describe("NewChatLandingScreen", () => {
       fireEvent.pointerDown(picker, { button: 0 });
       fireEvent.click(screen.getByTestId("new-chat-landing-agent-config-a1"));
       fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Preferred team model" }));
-      expect(readHarnessOptions("claude-native").model).toBe(isDefault ? "" : modelId);
+      expect(readHarnessOptions("claude-native").model).toBe(modelId);
       expect(picker).toHaveTextContent("Preferred team model");
     },
   );
@@ -5882,15 +5886,17 @@ describe("NewChatLandingScreen", () => {
     fireEvent.click(screen.getByTestId("new-chat-landing-agent-config-a2"));
 
     const models = within(screen.getByTestId("new-chat-landing-agent-models"));
-    expect(models.queryByText("Default")).not.toBeInTheDocument();
+    const followDefault = screen.getByTestId("new-chat-landing-agent-model-default");
+    expect(followDefault).toHaveAttribute("aria-checked", "true");
     expect(models.getAllByText("GPT-5.5")).toHaveLength(1);
     const defaultModel = models.getByRole("menuitemcheckbox", { name: "GPT-5.5" });
-    expect(defaultModel).toHaveAttribute("aria-checked", "true");
+    expect(defaultModel).toHaveAttribute("aria-checked", "false");
 
     fireEvent.click(models.getByRole("menuitemcheckbox", { name: "GPT-5.6" }));
+    expect(followDefault).toHaveAttribute("aria-checked", "false");
+    fireEvent.click(followDefault);
+    expect(followDefault).toHaveAttribute("aria-checked", "true");
     expect(defaultModel).toHaveAttribute("aria-checked", "false");
-    fireEvent.click(defaultModel);
-    expect(defaultModel).toHaveAttribute("aria-checked", "true");
     closeMenu();
     const { body } = await submitAndReadBody();
     expect(body.agent_id).toBe("a2");
@@ -13463,5 +13469,161 @@ describe("NewChatLandingScreen picker curation", () => {
     expect(row("a1")).toBeNull();
     expect(row("a2")).not.toBeNull();
     expect(screen.queryByText("Harnesses")).toBeNull();
+  });
+});
+
+// #12054: New Chat must remember an explicit Codex model pick, even when that
+// pick is the model the catalog currently marks as its default. "Follow the
+// catalog default" is its own Default row, and a successful create must not
+// erase a remembered model the catalog doesn't list right now.
+describe("NewChatLandingScreen Codex model pinning", () => {
+  beforeEach(setupLandingMocks);
+  afterEach(() => {
+    cleanup();
+    localStorage.clear();
+  });
+
+  const MISSING_CODEX_MODEL = "databricks-gpt-5-4";
+  const storedCodex = () =>
+    JSON.parse(localStorage.getItem(HARNESS_OPTIONS_KEY) ?? "{}")["codex-native"] as
+      Record<string, unknown> | undefined;
+  const codexDefaultMovedTo56 = () =>
+    mockModelQueries((harness) =>
+      harness === "codex-native"
+        ? {
+            ...CODEX_MODEL_OPTIONS_RESULT,
+            data: CODEX_MODEL_OPTIONS_RESULT.data.map((option) => ({
+              ...option,
+              isDefault: option.id === "databricks-gpt-5-6",
+            })),
+          }
+        : CLAUDE_MODEL_OPTIONS_RESULT,
+    );
+  const mockCreateOk = () =>
+    authenticatedFetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ id: "conv_x" }),
+    } as unknown as Response);
+  const renderReady = async () => {
+    renderLanding();
+    await waitFor(() =>
+      expect(screen.getByTestId("new-chat-landing-workspace-chip").textContent).toContain("repo"),
+    );
+  };
+  // The successful-create snapshot is written before the landing navigates
+  // into the new session, so this marks "storage is final".
+  const waitForCreated = () =>
+    waitFor(() => expect(screen.getByTestId("landing-location").textContent).toContain("conv_x"));
+
+  it("pins the catalog-default Codex model when its row is clicked", async () => {
+    mockCreateOk();
+    await renderReady();
+    openAgentModels("a2");
+    fireEvent.click(screen.getByTestId("new-chat-landing-agent-model-databricks-gpt-5-5"));
+    closePrimaryPicker();
+
+    expect(storedCodex()?.model).toBe("databricks-gpt-5-5");
+    const { body } = await submitAndReadBody();
+    expect(body.agent_id).toBe("a2");
+    expect(body.model_override).toBe("databricks-gpt-5-5");
+    await waitForCreated();
+    expect(storedCodex()?.model).toBe("databricks-gpt-5-5");
+  });
+
+  it("keeps a pinned Codex model checked after the catalog default moves", async () => {
+    mockCreateOk();
+    await renderReady();
+    openAgentModels("a2");
+    fireEvent.click(screen.getByTestId("new-chat-landing-agent-model-databricks-gpt-5-5"));
+    closePrimaryPicker();
+
+    codexDefaultMovedTo56();
+    fireEvent.change(screen.getByTestId("new-chat-landing-input"), {
+      target: { value: "catalog refreshed" },
+    });
+    openAgentModels("a2");
+    expect(screen.getByTestId("new-chat-landing-agent-model-databricks-gpt-5-5")).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    expect(screen.getByTestId("new-chat-landing-agent-model-databricks-gpt-5-6")).toHaveAttribute(
+      "aria-checked",
+      "false",
+    );
+    expect(screen.getByTestId("new-chat-landing-agent-model-default")).toHaveAttribute(
+      "aria-checked",
+      "false",
+    );
+    closePrimaryPicker();
+    const { body } = await submitAndReadBody();
+    expect(body.model_override).toBe("databricks-gpt-5-5");
+  });
+
+  it("offers Default alongside a catalog-marked default and follows the catalog when picked", async () => {
+    mockCreateOk();
+    await renderReady();
+    openAgentModels("a2");
+    fireEvent.click(screen.getByTestId("new-chat-landing-agent-model-databricks-gpt-5-6"));
+    fireEvent.click(screen.getByTestId("new-chat-landing-agent-model-default"));
+    expect(screen.getByTestId("new-chat-landing-agent-model-default")).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    closePrimaryPicker();
+
+    expect(storedCodex()?.model).toBe("");
+    const { body } = await submitAndReadBody();
+    expect(body.agent_id).toBe("a2");
+    expect(body.model_override).toBeUndefined();
+  });
+
+  it("does not overwrite a remembered Codex model the catalog no longer lists", async () => {
+    localStorage.setItem(LAST_AGENT_KEY, "a2");
+    // xhigh isn't on the catalog default's ladder, so the seed drops it too:
+    // the create must not persist that dropped effort either.
+    localStorage.setItem(
+      HARNESS_OPTIONS_KEY,
+      JSON.stringify({ "codex-native": { model: MISSING_CODEX_MODEL, effort: "xhigh" } }),
+    );
+    mockCreateOk();
+    await renderReady();
+    const { body } = await submitAndReadBody();
+    expect(body.agent_id).toBe("a2");
+    await waitForCreated();
+    expect(storedCodex()).toMatchObject({ model: MISSING_CODEX_MODEL, effort: "xhigh" });
+  });
+
+  it("persists an explicit model pick made while the remembered model is missing", async () => {
+    localStorage.setItem(LAST_AGENT_KEY, "a2");
+    localStorage.setItem(
+      HARNESS_OPTIONS_KEY,
+      JSON.stringify({ "codex-native": { model: MISSING_CODEX_MODEL, effort: "high" } }),
+    );
+    mockCreateOk();
+    await renderReady();
+    openAgentModels("a2");
+    fireEvent.click(screen.getByTestId("new-chat-landing-agent-model-databricks-gpt-5-6"));
+    closePrimaryPicker();
+    const { body } = await submitAndReadBody();
+    expect(body.model_override).toBe("databricks-gpt-5-6");
+    await waitForCreated();
+    expect(storedCodex()?.model).toBe("databricks-gpt-5-6");
+  });
+
+  it("persists an explicit Default pick made while the remembered model is missing", async () => {
+    localStorage.setItem(LAST_AGENT_KEY, "a2");
+    localStorage.setItem(
+      HARNESS_OPTIONS_KEY,
+      JSON.stringify({ "codex-native": { model: MISSING_CODEX_MODEL, effort: "high" } }),
+    );
+    mockCreateOk();
+    await renderReady();
+    openAgentModels("a2");
+    fireEvent.click(screen.getByTestId("new-chat-landing-agent-model-default"));
+    closePrimaryPicker();
+    const { body } = await submitAndReadBody();
+    expect(body.model_override).toBeUndefined();
+    await waitForCreated();
+    expect(storedCodex()?.model).toBe("");
   });
 });
